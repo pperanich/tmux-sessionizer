@@ -9,7 +9,7 @@ use crate::{
     configs::{Config, VcsProviders},
     dirty_paths::DirtyUtf8Path,
     error::TmsError,
-    repos::{find_repos, find_submodules, LazyRepoProvider},
+    repos::{find_repos, find_submodules, LazyRepoProvider, RepoProvider},
     tmux::Tmux,
     Result,
 };
@@ -50,15 +50,7 @@ impl Session {
         config: &Config,
     ) -> Result<()> {
         let repo = repo.resolve()?;
-        let path = if repo.is_bare() {
-            repo.path().to_path_buf().to_string()?
-        } else {
-            repo.work_dir()
-                .expect("bare repositories should all have parent directories")
-                .canonicalize()
-                .change_context(TmsError::IoError)?
-                .to_string()?
-        };
+        let path = session_working_dir(repo)?.to_string()?;
         let session_name = self.name.replace('.', "_");
 
         if !tmux.session_exists(&session_name) {
@@ -83,6 +75,13 @@ impl Session {
         tmux.switch_to_session(&session_name);
 
         Ok(())
+    }
+}
+
+fn session_working_dir(repo: &RepoProvider) -> Result<PathBuf> {
+    match repo.work_dir() {
+        Some(work_dir) => work_dir.canonicalize().change_context(TmsError::IoError),
+        None => Ok(repo.path().to_path_buf()),
     }
 }
 
@@ -265,5 +264,28 @@ mod tests {
         assert_eq!(deduplicated[0].name, "projects/proj2/test");
         assert_eq!(deduplicated[1].name, "to/proj2/test");
         assert_eq!(deduplicated[2].name, "to/proj1/test");
+    }
+
+    #[test]
+    fn session_working_dir_of_bare_repo_worktree_is_the_checkout() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let bare = root.join("project");
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["worktree", "add", "master"])
+            .current_dir(&bare)
+            .status()
+            .unwrap();
+
+        let worktree = LazyRepoProvider::new(&bare.join("master"), &[VcsProviders::Git]).unwrap();
+        let dir = session_working_dir(worktree.resolve().unwrap()).unwrap();
+
+        assert_eq!(dir, std::fs::canonicalize(bare.join("master")).unwrap());
     }
 }
