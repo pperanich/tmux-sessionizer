@@ -3,6 +3,7 @@ use std::{fs, path::PathBuf, process::Command};
 use tempfile::tempdir;
 use tms::configs::{Config, SearchDirectory, VcsProviders};
 use tms::repos::{find_repos, LazyRepoProvider};
+use tms::session::SessionType;
 
 fn config_searching(path: PathBuf, depth: usize) -> Config {
     Config {
@@ -80,6 +81,52 @@ fn find_repos_includes_worktrees() {
 }
 
 #[test]
+fn find_repos_includes_worktrees_with_relative_paths() {
+    let dir = tempdir().unwrap();
+    let search = dir.path().join("search");
+    let project = search.join("my-project");
+    fs::create_dir_all(&project).unwrap();
+    let search = fs::canonicalize(&search).unwrap();
+    Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&project)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "worktree.useRelativePaths", "true"])
+        .current_dir(&project)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["worktree", "add", "main"])
+        .current_dir(&project)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["worktree", "add", "test"])
+        .current_dir(&project)
+        .status()
+        .unwrap();
+
+    // Ensure `worktree.useRelativePaths` took effect.
+    let gitdir = fs::read_to_string(project.join("worktrees/main/gitdir")).unwrap();
+    assert!(
+        gitdir.trim_start().starts_with(".."),
+        "expected a relative gitdir, got: {gitdir:?}"
+    );
+
+    let mut config = config_searching(search, 2);
+    config.list_worktrees = Some(true);
+
+    let repos = find_repos(&config).unwrap();
+
+    assert!(repos.contains_key("my-project"));
+    assert!(repos.contains_key("my-project#main"));
+    assert!(repos.contains_key("my-project#test"));
+    assert_eq!(repos.len(), 3);
+}
+
+#[test]
 fn find_repos_excludes_linked_worktree() {
     let dir = tempdir().unwrap();
     let search = dir.path().join("search");
@@ -119,5 +166,79 @@ fn find_repos_excludes_linked_worktree() {
         !repos.contains_key("linked"),
         "linked worktree should not appear in picker results, got: {:?}",
         repos.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn find_repos_worktree_entry_is_a_worktree() {
+    let dir = tempdir().unwrap();
+    let search = dir.path().join("search");
+    let project = search.join("my-project");
+    fs::create_dir_all(&project).unwrap();
+    let search = fs::canonicalize(&search).unwrap();
+    Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&project)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["worktree", "add", "main"])
+        .current_dir(&project)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["worktree", "add", "test"])
+        .current_dir(&project)
+        .status()
+        .unwrap();
+    let mut config = config_searching(search, 2);
+    config.list_worktrees = Some(true);
+
+    let repos = find_repos(&config).unwrap();
+
+    let main_entry = repos
+        .get("my-project#main")
+        .expect("expected a my-project#main entry");
+    let SessionType::Git(main_worktree) = &main_entry[0].session_type else {
+        panic!("my-project#main should be a Git session");
+    };
+    assert!(
+        main_worktree.is_worktree().unwrap(),
+        "opening my-project#main should open only the `main` worktree, not fan out into siblings"
+    );
+
+    let repo_entry = repos
+        .get("my-project")
+        .expect("expected a my-project entry");
+    let SessionType::Git(whole_repo) = &repo_entry[0].session_type else {
+        panic!("my-project should be a Git session");
+    };
+    assert!(
+        !whole_repo.is_worktree().unwrap(),
+        "the bare repo itself is not a worktree; opening it is what fans out into per-worktree windows"
+    );
+}
+
+#[test]
+fn bare_repo_worktree_is_classified_as_worktree() {
+    let dir = tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let bare = root.join("project");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["worktree", "add", "master"])
+        .current_dir(&bare)
+        .status()
+        .unwrap();
+
+    let worktree = LazyRepoProvider::new(&bare.join("master"), &[VcsProviders::Git]).unwrap();
+
+    assert!(
+        worktree.is_worktree().unwrap(),
+        "a worktree of a bare repo should be classified as a worktree"
     );
 }
