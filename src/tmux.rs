@@ -106,15 +106,16 @@ impl Tmux {
         Tmux::stdout_to_string(output)
     }
 
+    /// The session the invoking client is in.
+    ///
+    /// `display-message` is the only way to ask this: it is client-scoped, so it answers for the
+    /// client that ran `tms`. The previous `list-sessions -f '#{session_attached}'` was
+    /// server-scoped and returned EVERY session with a client on it — one line per attached
+    /// session, not the current one. With a single client that read the same most of the time,
+    /// which is why it went unnoticed; with a second client attached anywhere (a person's, or a
+    /// control-mode monitor's) it returns several sessions.
     pub fn current_session(&self, format: &str) -> String {
-        let output = self.execute_tmux_command(&[
-            "list-sessions",
-            "-F",
-            format,
-            "-f",
-            "#{session_attached}",
-        ]);
-        Tmux::stdout_to_string(output)
+        self.display_message(format)
     }
 
     pub fn kill_session(&self, session: &str) -> process::Output {
