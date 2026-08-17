@@ -76,6 +76,36 @@ impl Tmux {
         Tmux::stdout_to_string(output)
     }
 
+    /// Sessions nobody is looking at, as `(name, last_attached)` pairs, most recent first when the
+    /// caller sorts on the second field.
+    ///
+    /// `#{session_attached}` counts every client, control-mode ones included. A tool that keeps a
+    /// `tmux -C attach-session` open per session — tmux-agents' daemon does, because tmux's
+    /// `%output` and `refresh-client -B` subscriptions are session-scoped — therefore makes every
+    /// session look attached, and a picker filtered on that comes up empty. Only a client someone
+    /// is actually looking at should hide a session, so the attached set comes from `list-clients`
+    /// with the control-mode ones dropped.
+    pub fn unattached_sessions(&self) -> Vec<(String, String)> {
+        let watched: Vec<String> = self
+            .list_clients("'#{?client_control_mode,,#{client_session}}'")
+            .lines()
+            .map(|line| line.trim().trim_matches('\'').to_string())
+            .filter(|session| !session.is_empty())
+            .collect();
+
+        self.list_sessions("'#{session_name},#{session_last_attached}'")
+            .lines()
+            .filter_map(|line| line.trim().trim_matches('\'').split_once(','))
+            .filter(|(name, _)| !watched.iter().any(|w| w == name))
+            .map(|(name, last_attached)| (name.to_string(), last_attached.to_string()))
+            .collect()
+    }
+
+    pub fn list_clients(&self, format: &str) -> String {
+        let output = self.execute_tmux_command(&["list-clients", "-F", format]);
+        Tmux::stdout_to_string(output)
+    }
+
     pub fn current_session(&self, format: &str) -> String {
         let output = self.execute_tmux_command(&[
             "list-sessions",
